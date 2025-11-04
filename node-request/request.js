@@ -2,6 +2,8 @@
 
 import { parseArgs } from 'node:util';
 import { hrtime } from 'node:process';
+import * as http from 'http';
+import { randomUUID } from 'crypto';
 
 /**
  * Parses and validates command-line arguments.
@@ -16,20 +18,6 @@ function getArgs() {
 
     try {
         const { values } = parseArgs({ options, allowPositionals: false });
-
-        if (values.help) {
-            console.log('Parallel HTTP Request Client');
-            console.log('Usage: node parallel-client.js --url <URL> [OPTIONS]\n');
-            console.log('Options:');
-            for (const [key, { help, short, default: def }] of Object.entries(options)) {
-                let line = `  --${key}`;
-                if (short) line += `, -${short}`;
-                line += `\t${help}`;
-                if (def) line += ` (default: ${def})`;
-                console.log(line);
-            }
-            process.exit(0);
-        }
 
         if (!values.url) {
             throw new Error('--url is a required argument.');
@@ -76,14 +64,21 @@ function getArgs() {
 async function singleRequest(id, url, { timeout, keepAlive }) {
     const startTime = hrtime.bigint();
 
+    let uuid = randomUUID();
     // Each request needs its own AbortController and signal
     const fetchOptions = {
-        signal: AbortController.timeout(timeout),
-        keepalive: keepAlive,
+        signal: AbortSignal.timeout(timeout),
+        method: "GET",
+        agent: new http.Agent({ keepAlive: keepAlive }),
+        headers: {
+            "x-mgc-test-id": uuid,
+        },
     };
+    console.log(`Request ${id}: GET ${url} | Timeout: ${timeout} | Keepalive: ${keepAlive} | MGC Id: ${uuid}`);
 
     try {
-        const response = await fetch(url, fetchOptions);
+        let req = new Request(url);
+        const response = await fetch(req, fetchOptions);
 
         // We must consume the body to fully complete the request
         // and allow the connection to be reused (if keepAlive=true)
@@ -91,6 +86,8 @@ async function singleRequest(id, url, { timeout, keepAlive }) {
 
         const endTime = hrtime.bigint();
         const duration = (endTime - startTime) / 1_000_000n; // Nanoseconds to milliseconds
+
+        console.log(`Response ${id}: Code: ${response.status} | Duration: ${duration}`)
 
         if (!response.ok) {
             return { status: 'failed', id, reason: `HTTP ${response.status}`, duration };
@@ -102,6 +99,7 @@ async function singleRequest(id, url, { timeout, keepAlive }) {
         const duration = (endTime - startTime) / 1_000_000n;
 
         let reason = error.message;
+        console.log(`Error: ${error.message}`);
         if (error.name === 'AbortError') {
             reason = 'Timeout';
         }
